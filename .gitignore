@@ -9,3 +9,6 @@ syncnet_checkpoint
 *.jpg
 data_utils/encoder.onnx
 __MACOSX
+data
+data_utils/data
+train.sh

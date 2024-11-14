@@ -214,7 +214,7 @@ def cosine_loss(a, v, y):
 
     return loss
     
-def train(save_dir, dataset_dir, mode):
+def train(save_dir, dataset_dir, mode, continue_checkpoint):
     if not os.path.exists(save_dir):
         os.mkdir(save_dir)
         
@@ -223,9 +223,14 @@ def train(save_dir, dataset_dir, mode):
         train_dataset, batch_size=16, shuffle=True,
         num_workers=4)
     model = SyncNet_color(mode).cuda()
+
+    previous_weights = os.path.join(save_dir, str(continue_checkpoint)+'.pth')
+    if os.path.exists(previous_weights):
+        model.load_state_dict(torch.load(previous_weights))
+
     optimizer = optim.Adam([p for p in model.parameters() if p.requires_grad],
                            lr=0.001)
-    for epoch in range(40):
+    for epoch in range(continue_checkpoint,40):
         for batch in train_data_loader:
             imgT, audioT, y = batch
             imgT = imgT.cuda()
@@ -236,7 +241,7 @@ def train(save_dir, dataset_dir, mode):
             loss.backward()
             optimizer.step()
         print(epoch, loss.item())
-        torch.save(model.state_dict(), os.path.join(save_dir, str(epoch)+'.pth'))
+        torch.save(model.state_dict(), os.path.join(save_dir, str(epoch+1)+'.pth'))
             
             
     
@@ -247,6 +252,7 @@ if __name__ == "__main__":
     parser.add_argument('--save_dir', type=str)
     parser.add_argument('--dataset_dir', type=str)
     parser.add_argument('--asr', type=str)
+    parser.add_argument('--continue_checkpoint', type=int, default=0)
     opt = parser.parse_args()
     
     # syncnet = SyncNet_color(mode=opt.asr)
@@ -255,4 +261,4 @@ if __name__ == "__main__":
     # audio = torch.zeros([1,16,32,32])
     # audio_embedding, face_embedding = syncnet(img, audio)
     # print(audio_embedding.shape, face_embedding.shape)
-    train(opt.save_dir, opt.dataset_dir, opt.asr)
+    train(opt.save_dir, opt.dataset_dir, opt.asr, opt.continue_checkpoint)

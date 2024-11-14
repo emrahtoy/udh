@@ -25,6 +25,7 @@ def get_args():
     parser.add_argument('--batchsize', type=int, default=1)
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--asr', type=str, default="hubert")
+    parser.add_argument('--continue_checkpoint', type=int, default=0)
 
     return parser.parse_args()
 
@@ -86,7 +87,7 @@ def train(net, epoch, batch_size, lr):
     optimizer = optim.Adam(net.parameters(), lr=lr)
     criterion = nn.L1Loss()
     
-    for e in range(epoch):
+    for e in range(args.continue_checkpoint, epoch):
         net.train()
         random_i = random.randint(0, len(dataset_dir_list)-1)
         dataset = dataset_list[random_i]
@@ -115,21 +116,25 @@ def train(net, epoch, batch_size, lr):
                 optimizer.step()
                 p.update(imgs.shape[0])
                 
-        if e % 5 == 0:
-            torch.save(net.state_dict(), os.path.join(save_dir, str(e)+'.pth'))
+        if (e+1) % 5 == 0:
+            torch.save(net.state_dict(), os.path.join(save_dir, str(e+1)+'.pth'))
         if args.see_res:
             net.eval()
-            img_concat_T, img_real_T, audio_feat = dataset.__getitem__(random.randint(0, dataset.__len__()))
-            img_concat_T = img_concat_T[None].cuda()
-            audio_feat = audio_feat[None].cuda()
-            with torch.no_grad():
-                pred = net(img_concat_T, audio_feat)[0]
-            pred = pred.cpu().numpy().transpose(1,2,0)*255
-            pred = np.array(pred, dtype=np.uint8)
-            img_real = img_real_T.numpy().transpose(1,2,0)*255
-            img_real = np.array(img_real, dtype=np.uint8)
-            cv2.imwrite("./train_tmp_img/epoch_"+str(e)+".jpg", pred)
-            cv2.imwrite("./train_tmp_img/epoch_"+str(e)+"_real.jpg", img_real)
+            if not os.path.exists("./train_tmp_img"):
+                 os.mkdir("./train_tmp_img")
+            for c in range(5):
+                random_index = random.randint(0, dataset.__len__())
+                img_concat_T, img_real_T, audio_feat = dataset.__getitem__(random_index)
+                img_concat_T = img_concat_T[None].cuda()
+                audio_feat = audio_feat[None].cuda()
+                with torch.no_grad():
+                    pred = net(img_concat_T, audio_feat)[0]
+                pred = pred.cpu().numpy().transpose(1,2,0)*255
+                pred = np.array(pred, dtype=np.uint8)
+                img_real = img_real_T.numpy().transpose(1,2,0)*255
+                img_real = np.array(img_real, dtype=np.uint8)
+                cv2.imwrite("./train_tmp_img/epoch_"+str(e+1)+"_"+str(c)+"_"+str(random_index)+".jpg", pred)
+                cv2.imwrite("./train_tmp_img/epoch_"+str(e+1)+"_"+str(c)+"_"+str(random_index)+"_real.jpg", img_real)
         
             
 
@@ -137,4 +142,7 @@ if __name__ == '__main__':
     
     
     net = Model(6, args.asr).cuda()
+    previous_weights = os.path.join(args.save_dir, str(args.continue_checkpoint)+'.pth')
+    if os.path.exists(previous_weights):
+        net.load_state_dict(torch.load(previous_weights))
     train(net, args.epochs, args.batchsize, args.lr)
