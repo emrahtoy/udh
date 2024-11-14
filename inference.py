@@ -74,6 +74,8 @@ for i in range(audio_feats.shape[0]):
     
     img = cv2.imread(img_path)
     lms_list = []
+
+    # reading landmarks
     with open(lms_path, "r") as f:
         lines = f.read().splitlines()
         for line in lines:
@@ -81,45 +83,71 @@ for i in range(audio_feats.shape[0]):
             arr = np.array(arr, dtype=np.float32)
             lms_list.append(arr)
     lms = np.array(lms_list, dtype=np.int32)
+    
+    #determining width, height and positions
     xmin = lms[1][0]
     ymin = lms[52][1]
 
     xmax = lms[31][0]
     width = xmax - xmin
     ymax = ymin + width
+    height = ymax - ymin
+
+    #get a crop from original image and determine its size
     crop_img = img[ymin:ymax, xmin:xmax]
-    h, w = crop_img.shape[:2]
+    h, w = crop_img.shape[:2] # isnt this same with the width and height above ?
+
+    #get resized version of crop_img
     crop_img = cv2.resize(crop_img, (168, 168), cv2.INTER_AREA)
     crop_img_ori = crop_img.copy()
+
     img_real_ex = crop_img[4:164, 4:164].copy()
     img_real_ex_ori = img_real_ex.copy()
+
+    #prepare masked image from the img_real_ex_ori
     img_masked = cv2.rectangle(img_real_ex_ori,(5,5,150,145),(0,0,0),-1)
     
+    # turn/flip the images
     img_masked = img_masked.transpose(2,0,1).astype(np.float32)
     img_real_ex = img_real_ex.transpose(2,0,1).astype(np.float32)
     
+    # merge masked and get tensor version of it
     img_real_ex_T = torch.from_numpy(img_real_ex / 255.0)
     img_masked_T = torch.from_numpy(img_masked / 255.0)
     img_concat_T = torch.cat([img_real_ex_T, img_masked_T], axis=0)[None]
     
+    # get the audio features tensor
     audio_feat = get_audio_features(audio_feats, i)
     if mode=="hubert":
         audio_feat = audio_feat.reshape(32,32,32)
     if mode=="wenet":
         audio_feat = audio_feat.reshape(256,16,32)
     audio_feat = audio_feat[None]
+
+    # put those tensors in gpu memory
     audio_feat = audio_feat.cuda()
     img_concat_T = img_concat_T.cuda()
     
+    # get prediction by using audio and image tensors
     with torch.no_grad():
         pred = net(img_concat_T, audio_feat)[0]
         
+    # take the prediction in cpu and return/flip it    
     pred = pred.cpu().numpy().transpose(1,2,0)*255
     pred = np.array(pred, dtype=np.uint8)
+
+    #merge prediction and original image
     crop_img_ori[4:164, 4:164] = pred
+
+    #resize again ( why )
     crop_img_ori = cv2.resize(crop_img_ori, (w, h))
+    
+    #merge into the original image (frame)
     img[ymin:ymax, xmin:xmax] = crop_img_ori
+
+    #write as a video frame
     video_writer.write(img)
+    
 video_writer.release()
 
 # ffmpeg -i test_video.mp4 -i test_audio.pcm -c:v libx264 -c:a aac result_test.mp4
