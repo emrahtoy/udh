@@ -80,7 +80,7 @@ def train(net, epoch, batch_size, lr):
     dataset_dir_list = [args.dataset_dir]
     for dataset_dir in dataset_dir_list:
         dataset = MyDataset(dataset_dir, args.asr)
-        train_dataloader = DataLoader(dataset, batch_size=16, shuffle=True, drop_last=False, num_workers=4)
+        train_dataloader = DataLoader(dataset, batch_size=16, shuffle=True, drop_last=False, num_workers=4, pin_memory=True)
         dataloader_list.append(train_dataloader)
         dataset_list.append(dataset)
     
