@@ -3,7 +3,8 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import argparse
+import onnxruntime
 class InvertedResidual(nn.Module):
     def __init__(self, inp, oup, stride, use_res_connect, expand_ratio=6):
         super(InvertedResidual, self).__init__()
@@ -219,10 +220,16 @@ if __name__ == '__main__':
     import copy
     import onnx
     import numpy as np
-    onnx_path = "./unet.onnx"
 
     from thop import profile, clever_format
+    parser = argparse.ArgumentParser(description='Train', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--onnx_path', type=str, default="")     # end with .mp4 please
+    parser.add_argument('--checkpoint', type=str, default="")
+    parser.add_argument('--asr', type=str, default="hubert")
 
+    args = parser.parse_args()
+
+    device = torch.device("cuda")
     def reparameterize_model(model: torch.nn.Module) -> torch.nn.Module:
         """ Method returns a model where a multi-branched structure
             used in training is re-parameterized into a single branch
@@ -236,26 +243,28 @@ if __name__ == '__main__':
             if hasattr(module, 'reparameterize'):
                 module.reparameterize()
         return model
-    device = torch.device("cuda")
-    def check_onnx(torch_out, torch_in, audio):
-        onnx_model = onnx.load(onnx_path)
+    
+    def check_onnx(torch_out, img, audio):
+        onnx_model = onnx.load(args.onnx_path)
         onnx.checker.check_model(onnx_model)
-        import onnxruntime
         providers = ["CUDAExecutionProvider"]
-        ort_session = onnxruntime.InferenceSession(onnx_path, providers=providers)
+        ort_session = onnxruntime.InferenceSession(args.onnx_path, providers=providers)
         print(ort_session.get_providers())
-        ort_inputs = {ort_session.get_inputs()[0].name: torch_in.cpu().numpy(), ort_session.get_inputs()[1].name: audio.cpu().numpy()}
+        ort_inputs = {ort_session.get_inputs()[0].name: img.cpu().numpy(), ort_session.get_inputs()[1].name: audio.cpu().numpy()}
         ort_outs = ort_session.run(None, ort_inputs)
         np.testing.assert_allclose(torch_out[0].cpu().numpy(), ort_outs[0][0], rtol=1e-03, atol=1e-05)
         print("Exported model has been tested with ONNXRuntime, and the result looks good!")
         
-    net = Model(6).eval().to(device)
+    net = Model(6).to(device)
+    net.load_state_dict(torch.load(args.checkpoint))
+    net.eval()
     img = torch.zeros([1, 6, 160, 160]).to(device)
-    audio = torch.zeros([1, 16, 32, 32]).to(device)
+    audio = torch.zeros([1, 32, 32, 32]).to(device) if args.asr=="hubert" else torch.zeros([1, 16, 32, 32]).to(device)
+
     # net = reparameterize_model(net)
-    flops, params = profile(net, (img,audio))
-    macs, params = clever_format([flops, params], "%3f")
-    print(macs, params)
+    # flops, params = profile(net, (img,audio))
+    # macs, params = clever_format([flops, params], "%3f")
+    # print(macs, params)
     # dynamic_axes= {'input':[2, 3], 'output':[2, 3]}
     
     input_dict = {"input": img, "audio": audio}
@@ -263,7 +272,7 @@ if __name__ == '__main__':
     with torch.no_grad():
         torch_out = net(img, audio)
         print(torch_out.shape)
-        torch.onnx.export(net, (img, audio), onnx_path, input_names=['input', "audio"],
+        torch.onnx.export(net, (img, audio), args.onnx_path, input_names=['input', "audio"],
                         output_names=['output'], 
                         # dynamic_axes=dynamic_axes,
                         # example_outputs=torch_out,

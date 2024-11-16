@@ -1,6 +1,8 @@
 import argparse
 import os
 import cv2
+import onnx
+import onnxruntime
 import torch
 import numpy as np
 import torch.nn as nn
@@ -20,6 +22,7 @@ parser.add_argument('--dataset', type=str, default="")
 parser.add_argument('--audio_feat', type=str, default="")
 parser.add_argument('--save_path', type=str, default="")     # end with .mp4 please
 parser.add_argument('--checkpoint', type=str, default="")
+
 args = parser.parse_args()
 
 checkpoint = args.checkpoint
@@ -27,6 +30,7 @@ save_path = args.save_path
 dataset_dir = args.dataset
 audio_feat_path = args.audio_feat
 mode = args.asr
+onnx_model = True if args.checkpoint is not None and args.checkpoint.endswith(".onnx") else False
 
 def get_audio_features(features, index):
     left = index - 8
@@ -60,12 +64,19 @@ if mode=="hubert":
     video_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc('M','J','P', 'G'), 25, (w, h))
 if mode=="wenet":
     video_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc('M','J','P', 'G'), 20, (w, h))
+
 step_stride = 0
 img_idx = 0
 
-net = Model(6, mode).cuda()
-net.load_state_dict(torch.load(checkpoint))
-net.eval()
+if(onnx_model):
+    onnx_weights = onnx.load(checkpoint)
+    onnx.checker.check_model(onnx_weights)
+    providers = ["CUDAExecutionProvider"]
+    net = onnxruntime.InferenceSession(checkpoint, providers=providers)
+else:
+    net = Model(6, mode).cuda()
+    net.load_state_dict(torch.load(checkpoint))
+    net.eval()
 
 end_time = time.time()  # Capture the end time
 execution_time = end_time - start_time  # Calculate the execution time
@@ -103,23 +114,23 @@ print("Creating video...")
 len_img = cached_images.__len__() -1
 
 cached_image_tensors = []
-
 for i in range(audio_feats.shape[0]):
     start_process_time = time.time()
-
+    
     #this will do the rewind when needed
-    if img_idx>len_img - 1:
+    if img_idx==len_img-1:
         step_stride = -1
-    if img_idx<1:
+    if img_idx == 0:
         step_stride = 1
-    img_idx += step_stride
 
     #reading image
     img = cached_images[img_idx]
-
+    
     try :
-        img_concat_T = cached_image_tensors[img_idx].cuda()
-        # print(f"{i+1}. used cached tensor")
+        if(onnx_model):
+            img_concat_T = cached_image_tensors[img_idx][0].cpu()
+        else:
+            img_concat_T = cached_image_tensors[img_idx][0].cuda()
     except:
         # reading landmarks
         lms = cached_landmarks[img_idx]
@@ -139,7 +150,6 @@ for i in range(audio_feats.shape[0]):
 
         #get resized version of crop_img
         crop_img = cv2.resize(crop_img, (168, 168), cv2.INTER_AREA)
-        crop_img_ori = crop_img.copy()
 
         img_real_ex = crop_img[4:164, 4:164].copy()
         img_real_ex_ori = img_real_ex.copy()
@@ -155,10 +165,12 @@ for i in range(audio_feats.shape[0]):
         img_real_ex_T = torch.from_numpy(img_real_ex / 255.0)
         img_masked_T = torch.from_numpy(img_masked / 255.0)
         img_concat_T = torch.cat([img_real_ex_T, img_masked_T], axis=0)[None]
-        print(f"{img_concat_T.device}")
-        cached_image_tensors.append(img_concat_T)
-        img_concat_T= img_concat_T.cuda()
-    
+        cache=[img_concat_T,crop_img,xmin,xmax,ymin,ymax,width,height]
+        cached_image_tensors.append(cache)
+        if(onnx_model):
+            img_concat_T= img_concat_T.cpu()
+        else:
+            img_concat_T= img_concat_T.cuda()
     
 
     # get the audio features tensor
@@ -168,35 +180,50 @@ for i in range(audio_feats.shape[0]):
     if mode=="wenet":
         audio_feat = audio_feat.reshape(256,16,32)
     audio_feat = audio_feat[None]
-
+    
     # put those tensors in gpu memory
-    audio_feat = audio_feat.cuda()
+    if(onnx_model):
+        audio_feat = audio_feat.cpu()
+    else:
+        audio_feat = audio_feat.cuda()
 
+    # if(i==1):
+        # print(f"audio shape : {audio_feat.device}")
+        # print(f"image shape : {img_concat_T.device}")
     # print(f"{i+1}. Image tensor ready to process {time.time() - start_process_time}  in second(s) ")
     # pred_start_time = time.time()
     # get prediction by using audio and image tensors
-    with torch.no_grad():
-        pred = net(img_concat_T, audio_feat)[0]
+    if(onnx_model):
+        pred=net.run(None, {"input":img_concat_T.numpy(),"audio":audio_feat.numpy()})[0][0]
+    else:
+        with torch.no_grad():
+            pred = net(img_concat_T, audio_feat)[0]
 
     # print(f"{i+1}. Got prediction {time.time() - pred_start_time}  in second(s) ")
         
-    # take the prediction in cpu and return/flip it    
-    pred = pred.cpu().numpy().transpose(1,2,0)*255
+    # take the prediction in cpu and return/flip it  
+    if(onnx_model):
+        pred = pred.transpose(1,2,0)*255
+    else:
+        pred = pred.cpu().numpy().transpose(1,2,0)*255
+
     pred = np.array(pred, dtype=np.uint8)
 
     #merge prediction and original image
+    crop_img_ori = cached_image_tensors[img_idx][1]
     crop_img_ori[4:164, 4:164] = pred
 
     #resize again ( why )
-    crop_img_ori = cv2.resize(crop_img_ori, (width, height))
+    crop_img_ori = cv2.resize(crop_img_ori, (cached_image_tensors[img_idx][6], cached_image_tensors[img_idx][7]))
     
     #merge into the original image (frame)
-    img[ymin:ymax, xmin:xmax] = crop_img_ori
+    img[cached_image_tensors[img_idx][4]:cached_image_tensors[img_idx][5], cached_image_tensors[img_idx][2]:cached_image_tensors[img_idx][3]] = crop_img_ori
 
     # print(f"{i+1}. Predicted image ready to write into video {time.time() - start_process_time}  in second(s) ")
     #write as a video frame
     video_writer.write(img)
     # print(f"{i+1}. Video frame write {time.time() - start_process_time}  in second(s) ")
+    img_idx = img_idx+step_stride
 video_writer.release()
 
 end_time = time.time()  # Capture the end time
