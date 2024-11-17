@@ -1,6 +1,9 @@
 import argparse
 import os
+import subprocess
 import cv2
+import ffmpegcv
+import ffmpegcv.ffmpeg_writer_noblock
 import onnx
 import onnxruntime
 import torch
@@ -9,6 +12,7 @@ import torch.nn as nn
 from torch import optim
 from tqdm import tqdm
 from torch.utils.data import DataLoader
+from data_utils.process import get_audio_feature
 from unet import Model
 # from unet2 import Model
 # from unet_att import Model
@@ -19,7 +23,8 @@ parser = argparse.ArgumentParser(description='Train',
 
 parser.add_argument('--asr', type=str, default="hubert")
 parser.add_argument('--dataset', type=str, default="")  
-parser.add_argument('--audio_feat', type=str, default="")
+# parser.add_argument('--audio_feat', type=str, default="")
+parser.add_argument('--wav', type=str, default="")  # end with .wav please
 parser.add_argument('--save_path', type=str, default="")     # end with .mp4 please
 parser.add_argument('--checkpoint', type=str, default="")
 
@@ -28,9 +33,14 @@ args = parser.parse_args()
 checkpoint = args.checkpoint
 save_path = args.save_path
 dataset_dir = args.dataset
-audio_feat_path = args.audio_feat
+
 mode = args.asr
+wav = args.wav
 onnx_model = True if args.checkpoint is not None and args.checkpoint.endswith(".onnx") else False
+
+
+
+audio_feat_path = wav.replace('.wav', '_hu.npy')
 
 def get_audio_features(features, index):
     left = index - 8
@@ -52,7 +62,11 @@ def get_audio_features(features, index):
 
 start_time = time.time()
 print("Start loading models features...")
-
+if(not os.path.exists(audio_feat_path)):
+    if mode == "wenet":
+        subprocess.run("python ./data_utils/wenet_infer.py "+wav,shell=True)
+    if mode == "hubert":
+        subprocess.run("python ./data_utils/hubert.py --wav "+wav, shell=True)
 audio_feats = np.load(audio_feat_path)
 img_dir = os.path.join(dataset_dir, "full_body_img/")
 lms_dir = os.path.join(dataset_dir, "landmarks/")
@@ -61,9 +75,11 @@ exm_img = cv2.imread(img_dir+"0.jpg")
 h, w = exm_img.shape[:2]
 
 if mode=="hubert":
-    video_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc('M','J','P', 'G'), 25, (w, h))
+    # video_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), 25, (w, h))
+    video_writer = ffmpegcv.noblock(ffmpegcv.VideoWriterNV,save_path, 'h264', fps=25, bitrate='2000k')
 if mode=="wenet":
-    video_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc('M','J','P', 'G'), 20, (w, h))
+    # video_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), 20, (w, h))
+    video_writer = ffmpegcv.noblock(ffmpegcv.VideoWriterNV,save_path, 'h264', fps=20, bitrate='2000k')
 
 step_stride = 0
 img_idx = 0
@@ -85,9 +101,12 @@ print(f"Models are loaded in {execution_time} seconds ")
 
 start_time = time.time()
 print("Start caching images and landmarks features...")
+
 # lets take images into gpu memory first and we expect 2 returns which means we are going to divide the length with 4
-frames_needed = (audio_feats.shape[0] // 4) + (audio_feats.shape[0] % 4)
-print(str(frames_needed)+" frames will be used, which means"+str(frames_needed/25)+" seconds of video, total video length is "+str(audio_feats.shape[0]/25)+" seconds")
+min_audio_length = 30*25
+audio_length = audio_feats.shape[0]
+frames_needed = audio_length if audio_length <= min_audio_length else  (audio_length // 4) + (audio_length % 4)
+print(str(frames_needed)+" frames will be used, which means "+str(frames_needed/25)+" seconds of video, total video length is "+str(audio_length/25)+" seconds")
 cached_images= []
 cached_landmarks= []
 for i in range(frames_needed):
@@ -225,8 +244,9 @@ for i in range(audio_feats.shape[0]):
     # print(f"{i+1}. Video frame write {time.time() - start_process_time}  in second(s) ")
     img_idx = img_idx+step_stride
 video_writer.release()
+cmd = f'ffmpeg -y -loglevel quiet -i {save_path} -i {wav} -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 {save_path.replace(".mp4","_result.mp4")}'
+os.system(cmd)
 
 end_time = time.time()  # Capture the end time
 execution_time = end_time - start_time  # Calculate the execution time
 print(f"Video created in {execution_time} seconds ")
-# ffmpeg -i test_video.mp4 -i test_audio.pcm -c:v libx264 -c:a aac result_test.mp4
