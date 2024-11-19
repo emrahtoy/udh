@@ -212,7 +212,7 @@ class Model(nn.Module):
         x = self.up3(x, x2)
         x = self.up4(x, x1)
         out = self.outc(x)
-        out = F.sigmoid(out)
+        out = torch.sigmoid(out)
         return out
 
 if __name__ == '__main__':

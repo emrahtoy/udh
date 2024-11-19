@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import os
 import subprocess
 import cv2
@@ -18,6 +19,19 @@ from unet import Model
 # from unet_att import Model
 
 import time
+
+mixed_precision = False
+
+# Enable automatic mixed precision if available
+try:
+    if(mixed_precision):
+        from torch.cuda.amp import autocast
+    else:
+        raise ImportError()
+except ImportError:
+    print("torch.cuda.amp not found. Mixed precision training will be disabled.")
+    autocast = lambda: contextlib.nullcontext()
+
 parser = argparse.ArgumentParser(description='Train',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
@@ -212,11 +226,14 @@ for i in range(audio_feats.shape[0]):
     # print(f"{i+1}. Image tensor ready to process {time.time() - start_process_time}  in second(s) ")
     # pred_start_time = time.time()
     # get prediction by using audio and image tensors
+
+    
     if(onnx_model):
         pred=net.run(None, {"input":img_concat_T.numpy(),"audio":audio_feat.numpy()})[0][0]
     else:
         with torch.no_grad():
-            pred = net(img_concat_T, audio_feat)[0]
+            with autocast():
+                pred = net(img_concat_T, audio_feat)[0]
 
     # print(f"{i+1}. Got prediction {time.time() - pred_start_time}  in second(s) ")
         
