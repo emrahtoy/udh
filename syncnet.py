@@ -1,3 +1,4 @@
+import contextlib
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -9,7 +10,18 @@ from torch import optim
 import random
 import argparse
 
+mixed_precision = True
 
+# Enable automatic mixed precision if available
+try:
+    if(mixed_precision):
+        from torch.cuda.amp import autocast, GradScaler
+    else:
+        raise ImportError()
+except ImportError:
+    print("torch.cuda.amp not found. Mixed precision training will be disabled.")
+    autocast = lambda: contextlib.nullcontext()
+    GradScaler = None
 
 class Dataset(object):
     def __init__(self, dataset_dir, mode):
@@ -207,11 +219,14 @@ class SyncNet_color(nn.Module):
         
         return audio_embedding, face_embedding
 
-logloss = nn.BCELoss()
+# Use BCEWithLogitsLoss instead of BCELoss
+logloss = nn.BCELoss() if mixed_precision==False else nn.BCEWithLogitsLoss()
 def cosine_loss(a, v, y):
+    # print(f"a:{str(a)} v:{str(v)} y:{str(y)}")
     d = nn.functional.cosine_similarity(a, v)
+    # loss = nn.functional.binary_cross_entropy_with_logits(d.unsqueeze(1), y)
+    # loss = nn.functional.binary_cross_entropy(d.unsqueeze(1), y)
     loss = logloss(d.unsqueeze(1), y)
-
     return loss
     
 def train(save_dir, dataset_dir, mode, continue_checkpoint):
@@ -230,16 +245,27 @@ def train(save_dir, dataset_dir, mode, continue_checkpoint):
 
     optimizer = optim.Adam([p for p in model.parameters() if p.requires_grad],
                            lr=0.001)
+    
+    # Initialize scaler if mixed precision is enabled
+    scaler = GradScaler() if GradScaler else None
+
     for epoch in range(continue_checkpoint,40):
         for batch in train_data_loader:
             imgT, audioT, y = batch
             imgT = imgT.cuda()
             audioT = audioT.cuda()
             y = y.cuda()
-            audio_embedding, face_embedding = model(imgT, audioT)
-            loss = cosine_loss(audio_embedding, face_embedding, y)
-            loss.backward()
-            optimizer.step()
+            with autocast():
+                audio_embedding, face_embedding = model(imgT, audioT)
+                loss = cosine_loss(audio_embedding, face_embedding, y)
+                # optimizer.zero_grad(set_to_none=True)
+                if scaler:
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    optimizer.step()
         print(epoch, loss.item())
         torch.save(model.state_dict(), os.path.join(save_dir, str(epoch+1)+'.pth'))
             
