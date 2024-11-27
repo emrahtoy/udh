@@ -12,3 +12,4 @@ __MACOSX
 data
 data_utils/data
 train.sh
+.env.*
