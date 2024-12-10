@@ -20,7 +20,7 @@ from unet import Model
 
 import time
 
-mixed_precision = False
+mixed_precision = True
 
 # Enable automatic mixed precision if available
 try:

@@ -258,7 +258,7 @@ def train(save_dir, dataset_dir, mode, continue_checkpoint):
             with autocast():
                 audio_embedding, face_embedding = model(imgT, audioT)
                 loss = cosine_loss(audio_embedding, face_embedding, y)
-                # optimizer.zero_grad(set_to_none=True)
+                optimizer.zero_grad(set_to_none=True)
                 if scaler:
                     scaler.scale(loss).backward()
                     scaler.step(optimizer)

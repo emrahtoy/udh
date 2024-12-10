@@ -7,7 +7,7 @@ import onnxruntime
 import numpy as np
 import time
 
-mixed_precision = True
+mixed_precision = False
 
 # Enable automatic mixed precision if available
 try:
@@ -62,6 +62,6 @@ with torch.no_grad():
                         output_names=['output'], 
                         # dynamic_axes=dynamic_axes,
                         # example_outputs=torch_out,
-                        opset_version=15,
+                        opset_version=11,
                         export_params=True)
 check_onnx(torch_out, img, audio)
