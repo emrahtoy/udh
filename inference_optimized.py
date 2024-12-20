@@ -229,10 +229,12 @@ for i in range(audio_feats.shape[0]):
 
     
     if(onnx_model):
+        print(f"video shape : {img_concat_T.numpy().shape} and audio shape is {audio_feat.numpy().shape}")
         pred=net.run(None, {"input":img_concat_T.numpy(),"audio":audio_feat.numpy()})[0][0]
     else:
         with torch.no_grad():
             with autocast():
+                print(f"video shape : {img_concat_T.shape} and audio shape is {audio_feat.shape}")
                 pred = net(img_concat_T, audio_feat)[0]
 
     # print(f"{i+1}. Got prediction {time.time() - pred_start_time}  in second(s) ")
