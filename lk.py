@@ -58,7 +58,7 @@ def prewarm(proc: JobProcess):
     logger.info("WARM AND READY!")
     
 def create_streamer(media_path, aiModels)->MediaStreamer :
-    return MediaStreamer(media_path, aiModels, 1)
+    return MediaStreamer(media_path, aiModels, 2)
 
 def create_aimodels(checkpoint)->AiModels:
     return AiModels(checkpoint=checkpoint)
@@ -69,7 +69,7 @@ async def warm_up()->None:
     start_time = time.time()
     if(aiModels is None):
         logger.info("Warming up AI Models...")
-        aiModels = await asyncio.get_event_loop().run_in_executor(None, create_aimodels,"./checkpoint/mesut/200.pth")
+        aiModels = await asyncio.get_event_loop().run_in_executor(None, create_aimodels,"./checkpoint/levent/65.onnx")
     else:
         logger.info("AI Models already initialized")
 
@@ -82,7 +82,7 @@ async def warm_up()->None:
     logger.info("Warming up Streamer...")
     # Create media streamer
     # Should we add a sample video file?
-    media_path = Path("./data/mesut/")
+    media_path = Path("./data/levent/")
     if(streamer is None):
         streamer = await asyncio.get_event_loop().run_in_executor(None, create_streamer, media_path, aiModels)
         streamer.warmup()
@@ -115,8 +115,10 @@ async def _direct_push_stream_frames(
     global streamer
     async for frame in stream:
         # logger.info(f"{audio_source} - {video_source} - {frame.audio} - {frame.video}")
-        await audio_source.capture_frame(frame.audio)
-        video_source.capture_frame(frame.video)
+        if(frame.audio is not None):
+            await audio_source.capture_frame(frame.audio)
+        if(frame.video is not None):
+            video_source.capture_frame(frame.video)
 @utils.log_exceptions(logger=logger)
 async def _speak(text:str, wait=0):
     global streamer
@@ -142,6 +144,7 @@ async def entrypoint(job: JobContext):
     audio_source = rtc.AudioSource(
         sample_rate=media_info.audio_sample_rate,
         num_channels=media_info.audio_channels,
+        queue_size_ms=40
     )
 
     # Publish tracks
@@ -174,7 +177,7 @@ async def entrypoint(job: JobContext):
         
         stream = streamer.stream()
         stream_task = asyncio.create_task(_direct_push_stream_frames(stream, audio_source, video_source))
-        speak_task = asyncio.create_task(_speak("Oldum olası bu dünyada bir karara varamadım.",2))
+        speak_task = asyncio.create_task(_speak("Merhaba dünya! Ben Emrah TOY ve maalesef Oldum olası bu dünyada bir karara varamadım. Belki sizler daha iyisini başarabilirsiniz. Elveda ve tüm balıklar için teşekkürler.",2))
         await stream_task
 
     finally:

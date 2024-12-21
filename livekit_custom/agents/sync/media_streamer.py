@@ -75,6 +75,7 @@ class MediaStreamer:
         self._switch=False
         audio_frame = rtc.AudioFrame.create(self._info.audio_sample_rate, self._info.audio_channels, self._info.audio_frame_size)
         self._silence = np.frombuffer(audio_frame.data, dtype=np.int16)
+        self._temp_buffer = np.array([], dtype=np.int16)
         self.warmup()
     
     def warmup(self):
@@ -98,14 +99,30 @@ class MediaStreamer:
                 self._step_stride = -1
             if self._index == 0:
                 self._step_stride = 1
-                
+            
             if(self._switchAt is not None and self._index == self._switchAt and self._switch==False):
                 self._switch=True
                 logger.info(f"Switched at {self._index} because it is set {self._switchAt}")
             
+            """ qsize = self._rendered_video_buffer.qsize()
+            if(qsize>0):
+                logger.info(f"Buffered frames : {self._rendered_video_buffer.qsize()}") """
+
             if self._switch and self._rendered_video_buffer.empty()==False:
                 self._switchAt = None
-                yield Frame(video=self._rendered_video_buffer.get_nowait(),audio=self._rendered_audio_buffer.get_nowait())
+
+                try: 
+                    video = self._rendered_video_buffer.get_nowait()
+                except Exception as e:
+                    video = None
+
+                try:
+                    audio = self._rendered_audio_buffer.get_nowait()
+                except Exception as e:
+                    audio = None
+                
+                yield Frame(video=video,audio=audio)
+                
             else:
                 self._switch = False
                 video_frame = self._images[self._index]
@@ -125,7 +142,7 @@ class MediaStreamer:
                 
 
             self._index=self._index + self._step_stride
-            await asyncio.sleep(0.04)
+            await asyncio.sleep(0)
     async def stream_video(self) -> AsyncIterable[rtc.VideoFrame]:
         """Streams image frames from the image list in an endless loop."""
         while not self._stopped:
@@ -179,11 +196,13 @@ class MediaStreamer:
                 )
                 
 
+    
     async def speak(self,text:str,tts)->None:
         # logger.info(f"Going to tts : {text}")
         self._audio_buffer = bytearray()
         async for output in tts.synthesize(text):
             await self.put_audio_chunks(output)
+        self.put_audio_chunks(None)
 
         audio_bytes = np.frombuffer(self._audio_buffer, dtype=np.int16)
         # self._audio_features = await self._aiModels.create_audio_feature(audio_bytes,self._info.audio_sample_rate, 1000)
@@ -212,47 +231,79 @@ class MediaStreamer:
         step_stride = self._step_stride
         self._switchAt = jump_index + 0 # to be sure it doesnt change in the loop below
         logger.info(f"index is now {self._index} and will be switched at {self._switchAt}")
+        
+        audio_sent=False
+        type=1
         for i in range(self._audio_features.shape[0]):
-            start_time = time.perf_counter()
-            #this will do the rewind when needed
+            # start_time = time.perf_counter_ns()
+            # this will do the rewind when needed
             if jump_index==self._img_len-1:
                 step_stride = -1
             if jump_index == 0:
                 step_stride = 1
-            start_idx=i*1280
-            end_idx=start_idx+1280
-            audio_bytes = self._audio_buffer[start_idx:end_idx]
+            
             # logger.debug(f"{len(self._audio_buffer)} -> {len(audio_bytes)}")
             audio_features = self._aiModels.get_audio_features(self._audio_features,i)
-            video_frame = asyncio.create_task(self.create_video_frame(audio_features, self._tensors[jump_index], self._images[jump_index]))
-            audio_frame = asyncio.create_task(self.create_audio_frame(audio_bytes))
-            await asyncio.gather(video_frame,audio_frame)
+
+            if(type==1):
+                start_idx=i*1280
+                end_idx=start_idx+1280
+                audio_bytes = self._audio_buffer[start_idx:end_idx]
+                video_frame = asyncio.create_task(self.create_video_frame(audio_features, self._tensors[jump_index], self._images[jump_index]))
+                audio_frame = asyncio.create_task(self.create_audio_frame(audio_bytes))
+                await asyncio.gather(video_frame,audio_frame)
+            else:
+                if(audio_sent==False):
+                    video_frame = asyncio.create_task(self.create_video_frame(audio_features, self._tensors[jump_index], self._images[jump_index]))
+                    audio_frame = asyncio.create_task(self.create_audio_frame(self._audio_buffer))
+                    audio_sent=True
+                    await asyncio.gather(video_frame,audio_frame)
+                else:
+                    video_frame = asyncio.create_task(self.create_video_frame(audio_features, self._tensors[jump_index], self._images[jump_index]))
+                    await video_frame
+
             jump_index=jump_index + step_stride
-            end_time = time.perf_counter()
-            # logger.warning(f"Time : {(end_time-start_time)*1000}")
+            """ end_time = time.perf_counter_ns()
+            logger.warning(f'{i} capture frame : {(end_time-start_time)/1e6:.3f}') """
             
+    async def put_audio_chunks(self,synthesizedAudio:SynthesizedAudio,to:str="buffer") -> None:
+        
+        if(synthesizedAudio is None):
+            current_chunk = self._temp_buffer.copy()
+            self._temp_buffer = self._temp_buffer = np.array([], dtype=np.int16)
+        else:
+            current_chunk = np.frombuffer(synthesizedAudio.frame.data, dtype=np.int16) # Source samples per channel is 1600 
+
+        if(self._temp_buffer.size>0):
+            current_chunk = np.concatenate((self._temp_buffer, current_chunk))
+            self._temp_buffer = np.array([], dtype=np.int16)
+
+        size = np.size(current_chunk)
+        target_samples_per_channel = self._info.audio_frame_size # current value is 640
+        
+        while size >= target_samples_per_channel:
+            # Extract a frame from the current chunk
             
 
-    async def put_audio_chunks(self,synthesizedAudio:SynthesizedAudio,to:str="buffer") -> None:
-        current_chunk = np.frombuffer(synthesizedAudio.frame.data, dtype=np.int16) # removes wav header
-        """ logger.info(f"Sample per channel : {synthesizedAudio.frame.samples_per_channel}")
-        logger.info(f"Sample rate : {synthesizedAudio.frame.sample_rate}")
-        logger.info(f"Size of the audio chunk is :{np.size(current_chunk)}") """
-        size = np.size(current_chunk)
-        while size > 0:
-            # Extract a frame from the current chunk
-            if np.size(current_chunk) < self._info.audio_frame_size:
-                current_chunk= np.pad(current_chunk, (0, self._info.audio_frame_size - np.size(current_chunk)), mode='constant')
-            audio_frame = current_chunk[:self._info.audio_frame_size]
-            current_chunk = current_chunk[self._info.audio_frame_size:]
+            audio_frame = current_chunk[:target_samples_per_channel]
+            current_chunk = current_chunk[target_samples_per_channel:]
 
             # push frame to queue
-            # logger.info("Size of the audio frame is : "+str(np.size(audio_frame)))
             if(to == "buffer"):
                 self._audio_buffer.extend(audio_frame.tobytes())
             else:
                 await self._audio_chunks.put(audio_frame)
-            size=size-self._info.audio_frame_size
+            size=size-target_samples_per_channel
+        
+        if np.size(current_chunk) < target_samples_per_channel and np.size(current_chunk) > 0:
+            if(synthesizedAudio is None):
+                audio_frame= np.pad(current_chunk, (0, target_samples_per_channel - np.size(current_chunk)), mode='constant')
+                if(to == "buffer"):
+                    self._audio_buffer.extend(audio_frame.tobytes())
+                else:
+                    await self._audio_chunks.put(audio_frame)
+            else:
+                self._temp_buffer = current_chunk.copy()
     def aclose(self) -> None:
         """Closes the media container and stops streaming."""
         self._stopped = True
@@ -294,13 +345,14 @@ class MediaStreamer:
         #merge into the original image (frame)
         img = cached_image.copy()
         img[cached_tensor[4]:cached_tensor[5], cached_tensor[2]:cached_tensor[3]] = crop_img_ori
-
+        
         self._rendered_video_buffer.put_nowait(rtc.VideoFrame(
                     width=img.shape[1],
                     height=img.shape[0],
                     type=rtc.VideoBufferType.RGB24,
                     data=cv2.cvtColor(img, cv2.COLOR_BGR2RGB).tobytes(),
                 ))
+        
     def cache_images(self):
         # reading images
         for i in range(self._img_len):
